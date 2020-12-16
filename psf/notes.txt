@@ -1,25 +1,54 @@
-TODO:
-Fix reserved in psf_cat files.  The reserved stars seem not to have made it in.
-Get other kinds of blacklisting to put in as flags in expinfo
-airmass, tiling, etc. still not in exposure_info catalogs.
 
 make_explist pulls out the relevant exposures from the meds files
 setup_output runs run_psfex.py, only setting up the directory structure
 go runs run_psfex.py, runs findstars and psfex
-- Use verify.py to verify that all files were either made or blacklisted.
+ver runs verify.py to verify that all files were either made or blacklisted.
 relink runs run_psfex.py, skipping the findstars and psfex steps and just relinks files
 sync_to_nersc copies the psfex files and blacklist over to nersc
 exp runs build_exp_catalog.py, builds the catalog of information about exposures
 cats runs build_psf_cats.py, builds catalogs of PSF information for each exposure
 rho runs run_rho.py, computes the rho statistics for each exposure/ccd
 rho2 runs run_rho2.py, computes the rho statistics for the full data and each filter
+  -- Note: rho2 also makes the big files with all psf measurements psf_*_tag_bands.fits
 plots runs plot_rho.py, makes plots
 mag runs plot_mag.py, makes other plots
 
 Y3:
-y3a1-v02    Basic Piff run with pixel grid and basispoly, order=3
+y3a1-v02    Basic Piff run with pixel grid and basispoly, order=3, size=17, scale=0.26
 y3a1-v03    Fixed a bunch of findstars failures.  Also use ngmix for measurements.
 y3a1-v04    Same as v03 but with hsm
+y3a1-v05    Same as v03 but using priors
+y3a1-v06    Same as v05 but use mag_cut = 2, min_mag=10, since still some B/F at bright end.
+y3a1-v07    Same as v05 but use mag_cut = 1, (no min_mag, but fixed but in mag_cut)
+y3a1-v08    Same as v05 but use mag_cut = 2, (no min_mag)
+y3a1-v09    Same as v07 but apply zeropoint, so magnitudes are accurate, max_mag=21
+y3a1-v10    Same as v09 but change how background is subtracted.  Do it first on the actual image.
+y3a1-v11    Same as v10 but order=2
+y3a1-v12    Same as v10 but size=22, scale=0.20 (same physical size, but better resolution)
+y3a1-v13    Same as v10 but size=22, scale=0.26 (larger physical size, but same resolution)
+y3a1-v14    Same as v10 but size=18, scale=0.26 (even size, but otherwise basically the same)
+y3a1-v15    Same as v10 but size=19, scale=0.26 (back to odd size to make sure)
+y3a1-v16    Same as v10 but lanczos order 5
+y3a1-v17    Same as v12 but size=23
+y3a1-v18    Same as v10 but with new zone029 file (size=17, scale=0.26)  (high rho2, rho5)
+y3a1-v19    Same as v18 Piff commit 639f9f49 (branched from 4072b356)  (high rho2, rho5)
+y3a1-v20    Same as v18 Piff v0.2.0, galsim v1.5.0-alpha  (good)
+y3a1-v21    Same as v18 Piff v0.2.1, galsim v1.5.1  (good)
+y3a1-v22    Same as v21 using Condor ten_zones.riz
+y3a1-v23    Same as v22 using Condor all Y3 (with PSFEx)  (new canonical result)
+y3a1-v24    Same as v23 but scale=0.30, size=15, also new PSF_BAD_SOLUTION (GalSim 1.6)
+y3a1-v25    Same as v23 but scale=0.30, size=15, also new PSF_BAD_SOLUTION (GalSim 1.5.1)
+y3a1-v26    Same as v25 but size=17(15), startn1=0.10(0.15), TOO_FEW=25(20), mag_cut=1.2(1.0).
+y3a1-v27    Same as v26 but flag LARGE_SIZE_SPREAD and OUTLIER_SIZE from Piff set, not obs.
+y3a1-v28    Same as v27 but draw(x,y) rather than int(x+0.5), int(y+0.5)
+y3a1-v29    Same as v28 but add noise to drawn Piff image.
+y3a1-v30    Same as v29 but GalSim v2.1, Piff v0.3.0
+y3a1-v31    Same as v30 but trying out Y6 astrometry solution
+
+
+
+=============
+Old notes
 
 
 v3 uses degree 2,2, FEW_STARS = 50

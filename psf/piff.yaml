@@ -4,10 +4,10 @@ modules:
 input:
 
     #dir: '/astro/u/mjarvis/work/y3_piff/y3a1-v01/226650'
-    image_file_name: 'D00226650_z_c13_r2355p02_immasked.fits.fz'
-    image_hdu: 1
-    badpix_hdu: 2
-    weight_hdu: 3
+    image_file_name: 'D00226650_z_c13_r2355p02_immasked.fits'
+    image_hdu: 0
+    badpix_hdu: 1
+    weight_hdu: 2
 
     cat_file_name: 'D00226650_z_c13_r2355p02_stars.fits'
     cat_hdu: 1
@@ -27,7 +27,7 @@ input:
     wcs:
         type: Pixmappy
         dir: '/astro/u/mjarvis/rmjarvis/DESWL/psf/'
-        file_name: 'zone029.astro'
+        file_name: 'zone029.astro.orig'
         exp: 226650
         ccdnum: 13
 
@@ -39,19 +39,16 @@ psf:
 
     model:
         type: PixelGrid
-        scale: 0.20
+        scale: 0.30
         size: 17
-        start_sigma: 0.8  # The code is pretty robust to this being larger than the actual size
-                          # of the PSF, but if it's much smaller, then there can be problems.
 
     interp:
         type: BasisPolynomial
-        #type: Polynomial
         order: 3
 
     outliers:
         type: Chisq
-        nsigma: 4
+        nsigma: 5.5
         max_remove: 0.01
 
 verbose: 2

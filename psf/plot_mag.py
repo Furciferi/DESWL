@@ -1,37 +1,46 @@
 #! /usr/bin/env python
-# Compute rho statistics on PSFEx outputs.
-# This involves creating catalogs of shapes based on the PSFEx files, and then using
-# TreeCorr to compute the correlation functions.
 
 from __future__ import print_function
 import matplotlib
 matplotlib.use('Agg') # Don't use X-server.  Must be before importing matplotlib.pyplot or pylab!
 import matplotlib.pyplot as plt
+import os
+import glob
+import galsim
+import json
+import numpy as np
+from read_psf_cats import read_data, band_combinations
+
 plt.style.use('/astro/u/mjarvis/.config/matplotlib/stylelib/supermongo.mplstyle')
- 
+
 def parse_args():
     import argparse
-    
+
     parser = argparse.ArgumentParser(description='Run PSFEx on a set of runs/exposures')
 
     # Drectory arguments
-    parser.add_argument('--work', default='./',
+    parser.add_argument('--work', default='/astro/u/mjarvis/work/y3_piff',
                         help='location of work directory')
     parser.add_argument('--tag', default=None,
                         help='A version tag to add to the directory name')
 
     # Exposure inputs
     parser.add_argument('--file', default='',
-                        help='list of run/exposures (in lieu of separate exps, runs)')
+                        help='list of exposures (in lieu of exps)')
     parser.add_argument('--exps', default='', nargs='+',
                         help='list of exposures to run')
+    parser.add_argument('--use_dat', default=False, action='store_const', const=True,
+                        help='Use the saved dat file, rather than recalculate')
 
     # Options
-    parser.add_argument('--use_psfex', default=False, action='store_const', const=True,
-                        help='Use PSFEx rather than Piff model')
     parser.add_argument('--use_reserved', default=False, action='store_const', const=True,
                         help='just use the objects with the RESERVED flag')
-
+    parser.add_argument('--use_psfex', default=False, action='store_const', const=True,
+                        help='Use PSFEx rather than Piff model')
+    parser.add_argument('--bands', default='grizY', type=str,
+                        help='Limit to the given bands')
+    parser.add_argument('--frac', default=1., type=float,
+                        help='Choose a random fraction of the input stars')
 
     args = parser.parse_args()
     return args
@@ -56,6 +65,7 @@ def break_axes(ax, ax2):
     ax2.plot((-d,+d),(-d,+d), **kwargs)
     ax2.plot((-d,+d),(1-d,1+d), **kwargs)
 
+
 def add_to_list(band, vlist, value):
     vlist['griz'].append(value)
     if band not in vlist.keys():
@@ -66,127 +76,21 @@ def add_to_list(band, vlist, value):
         vlist['ri'].append(value)
     vlist[band].append(value)
 
-def get_data(exps, work,
-             mask_list, used_list, ccd_list, 
-             airmass_list, sky_list, sigsky_list, fwhm_list,
-             ra_list, dec_list, x_list, y_list, m_list,
-             e1_list, e2_list, T_list, pe1_list, pe2_list, pT_list,
-             tag, prefix='piff', reserved=False):
 
-    import fitsio
-    import numpy
-    import os
+def bin_by_mag(m, dT, de1, de2, min_mused):
 
-    BAD_CCDS = [2, 31, 61]
-
-    for exp in exps:
-
-        print('Start work on exp = ',exp)
-        expnum = int(exp)
-        print('expnum = ',expnum)
-        expinfo = fitsio.read(os.path.join(work, exp, 'exp_info_%d.fits'%expnum))
-
-        if expnum not in expinfo['expnum']:
-            print('expnum is not in expinfo!')
-            print('expinfo[expnum] = ',expinfo['expnum'])
-            #raise RuntimeError("Could not find information about this expnum")
-            print('Skipping ',run,exp)
-            continue
-
-        i = numpy.nonzero(expinfo['expnum'] == expnum)[0][0]
-        #print('i = ',i)
-        band = expinfo['band'][i]
-        print('band = ',band)
-        
-        for k in range(len(expinfo)):
-            ccdnum = expinfo[k]['ccdnum']
-            if expinfo[k]['flag'] != 0:
-                print('Skipping ccd %d because it is blacklisted: '%ccdnum, expinfo[k]['flag'])
-                continue
-            if ccdnum in BAD_CCDS:
-                print('Skipping ccd %d because it is BAD'%ccdnum)
-
-            cat_file = os.path.join(work, exp, "psf_cat_%d_%d.fits"%(expnum,ccdnum))
-            #print('cat_file = ',cat_file)
-            try:
-                data = fitsio.read(cat_file)
-                flag = data[prefix+'_flag']
-            except (OSError, IOError):
-                print('Unable to open cat_file %s.  Skipping this file.'%cat_file)
-                continue
-
-            #print('max flag = ',max(flag))
-            #print('min flag = ',min(flag))
-            if len(flag) == 0:
-                print('No data')
-                continue
-            if min(flag) < 0:
-                print('!!!Flag is negative!!!')
-            if reserved:
-                mask = (flag == 64) | (flag == 65)
-            else:
-                mask = (flag == 0) | (flag == 1)
-
-            if mask.sum() == 0:
-                print('All objects in this exposure are flagged.')
-                print('Probably due to astrometry flags. Skip this exposure.')
-                continue
-
-            used = (flag == 0)
-            bright = mask & (data['mag'] < 10.2)
-
-            #print('nobject = ',sum(mask))
-            #print('nused = ',sum(used))
-            #print('full mag range = ',min(data['mag']),max(data['mag']))
-            #print('masked mag range = ',min(data['mag'][mask]),max(data['mag'][mask]))
-            #print('used mag range = ',min(data['mag'][used]),max(data['mag'][used]))
-            #print('alt used mag range = ',min(data[used]['mag']),max(data[used]['mag']))
-
-            add_to_list(band, mask_list, mask)
-            add_to_list(band, used_list, used)
-            add_to_list(band, ccd_list, [ccdnum]*len(used))
-
-            add_to_list(band, ra_list, data['ra'])
-            add_to_list(band, dec_list, data['dec'])
-            add_to_list(band, x_list, data['x'])
-            add_to_list(band, y_list, data['y'])
-            add_to_list(band, m_list, data['mag'])
-
-            add_to_list(band, e1_list, data['obs_e1'])
-            add_to_list(band, e2_list, data['obs_e2'])
-            add_to_list(band, T_list, data['obs_T'])
-
-            add_to_list(band, pe1_list, data[prefix + '_e1'])
-            add_to_list(band, pe2_list, data[prefix + '_e2'])
-            add_to_list(band, pT_list, data[prefix + '_T'])
-
-            n = len(mask)
-            #add_to_list(band, airmass_list, [expinfo['airmass'][k]] * n)
-            #add_to_list(band, sky_list, [expinfo['sky'][k]] * n)
-            #add_to_list(band, sigsky_list, [expinfo['sigsky'][k]] * n)
-            #add_to_list(band, fwhm_list, [expinfo['fwhm'][k]] * n)
-
-    print('\nFinished processing all exposures')
-
-
-def bin_by_mag(m, dT, de1, de2, min_mused, key):
-
-    import numpy
+    import numpy as np
     import matplotlib.pyplot as plt
 
-    # Adjust for wrong zero point in final cut images.
-    # From Eli:
-    #   The typical r-band zeropoint for photometric data, top-of-the-atmosphere is 30.3. 
-    #   The raw zeropoint in the finalcut catalogs is 25.0. 
-    #   So just add 5.3 and you're in the ballpark.
-    m = m + 5.3
-    min_mused += 5.3
+    min_mag = 13.5
+    max_mag = 21
+    #min_mused = 15
 
     # Bin by mag
-    mag_bins = numpy.linspace(15.3,22,71)
+    mag_bins = np.linspace(min_mag,max_mag,71)
     print('mag_bins = ',mag_bins)
 
-    index = numpy.digitize(m, mag_bins)
+    index = np.digitize(m, mag_bins)
     print('len(index) = ',len(index))
     bin_de1 = [de1[index == i].mean() for i in range(1, len(mag_bins))]
     print('bin_de1 = ',bin_de1)
@@ -194,13 +98,13 @@ def bin_by_mag(m, dT, de1, de2, min_mused, key):
     print('bin_de2 = ',bin_de2)
     bin_dT = [dT[index == i].mean() for i in range(1, len(mag_bins))]
     print('bin_dT = ',bin_dT)
-    bin_de1_err = [ numpy.sqrt(de1[index == i].var() / len(de1[index == i])) 
+    bin_de1_err = [ np.sqrt(de1[index == i].var() / len(de1[index == i]))
                     for i in range(1, len(mag_bins)) ]
     print('bin_de1_err = ',bin_de1_err)
-    bin_de2_err = [ numpy.sqrt(de2[index == i].var() / len(de2[index == i])) 
+    bin_de2_err = [ np.sqrt(de2[index == i].var() / len(de2[index == i]))
                     for i in range(1, len(mag_bins)) ]
     print('bin_de2_err = ',bin_de2_err)
-    bin_dT_err = [ numpy.sqrt(dT[index == i].var() / len(dT[index == i])) 
+    bin_dT_err = [ np.sqrt(dT[index == i].var() / len(dT[index == i]))
                     for i in range(1, len(mag_bins)) ]
     print('bin_dT_err = ',bin_dT_err)
 
@@ -219,39 +123,63 @@ def bin_by_mag(m, dT, de1, de2, min_mused, key):
     print('bin_de1 = ',bin_de1)
     print('bin_de2 = ',bin_de2)
     print('bin_dT = ',bin_dT)
+    return mag_bins[:-1], bin_dT, bin_dT_err, bin_de1, bin_de1_err, bin_de2, bin_de2_err
+
+def write_bins(data, outfile):
+    cols = np.array(data)
+    np.savetxt(outfile, cols, fmt='%.6e',
+               header='mag_bins  '+
+                      'dT  sig_dT '+
+                      'de1  sig_de1 '+
+                      'de2  sig_de2 ')
+    print('wrote',outfile)
+
+def read_bins(infile):
+    print('read',infile)
+    data = np.loadtxt(infile)
+    return data
+
+def plot_bins(data, outfile, min_mused=None):
+    mag_bins, bin_dT, bin_dT_err, bin_de1, bin_de1_err, bin_de2, bin_de2_err = data
 
     fig, axes = plt.subplots(2,1, sharex=True)
 
+    min_mag = 13.5
+    max_mag = 21
+    #min_mused = 15
+ 
     ax = axes[0]
     ax.set_ylim(-0.002,0.012)
-    ax.plot([15.3,21.5], [0,0], color='black')
-    ax.plot([min_mused,min_mused],[-1,1], color='Grey')
-    ax.fill( [15.3,15.3,min_mused,min_mused], [-1,1,1,-1], fill=False, hatch='/', color='Grey')
-    t_line = ax.errorbar(mag_bins[:-1], bin_dT, yerr=bin_dT_err, color='green', fmt='o')
+    ax.plot([min_mag,max_mag], [0,0], color='black')
+    if min_mused is not None:
+        ax.plot([min_mused,min_mused],[-1,1], color='Grey')
+        ax.fill( [min_mag,min_mag,min_mused,min_mused], [-1,1,1,-1], fill=False, hatch='/', color='Grey')
+    t_line = ax.errorbar(mag_bins, bin_dT, yerr=bin_dT_err, color='green', fmt='o')
     ax.legend([t_line], [r'$\delta T$'])
     ax.set_ylabel(r'$T_{\rm PSF} - T_{\rm model} ({\rm arcsec}^2)$')
 
     ax = axes[1]
     ax.set_ylim(-3.e-4,6.5e-4)
-    ax.plot([15.3,21.5], [0,0], color='black')
-    ax.plot([min_mused,min_mused],[-1,1], color='Grey')
-    ax.fill( [15.3,15.3,min_mused,min_mused], [-1,1,1,-1], fill=False, hatch='/', color='Grey')
-    e1_line = ax.errorbar(mag_bins[:-1], bin_de1, yerr=bin_de1_err, color='red', fmt='o')
-    e2_line = ax.errorbar(mag_bins[:-1], bin_de2, yerr=bin_de2_err, color='blue', fmt='o')
+    ax.plot([min_mag,max_mag], [0,0], color='black')
+    if min_mused is not None:
+        ax.plot([min_mused,min_mused],[-1,1], color='Grey')
+        ax.fill( [min_mag,min_mag,min_mused,min_mused], [-1,1,1,-1], fill=False, hatch='/', color='Grey')
+    e1_line = ax.errorbar(mag_bins, bin_de1, yerr=bin_de1_err, color='red', fmt='o')
+    e2_line = ax.errorbar(mag_bins, bin_de2, yerr=bin_de2_err, color='blue', fmt='o')
     ax.legend([e1_line, e2_line], [r'$\delta e_1$', r'$\delta e_2$'])
     ax.set_ylabel(r'$e_{\rm PSF} - e_{\rm model}$')
 
-    ax.set_xlim(15.3,21.5)
+    ax.set_xlim(min_mag,max_mag)
     ax.set_xlabel('Magnitude')
 
     fig.set_size_inches(7.0,10.0)
     plt.tight_layout()
-    plt.savefig('dpsf_mag_' + key + '.pdf')
+    plt.savefig(outfile)
 
 
-def bin_by_chip_pos(x, dT, de1, de2, key, xy):
+def bin_by_chip_pos(x, dT, de1, de2, bands, xy):
 
-    import numpy
+    import numpy as np
     import matplotlib.pyplot as plt
 
     # Bin by chip x or y position
@@ -260,9 +188,9 @@ def bin_by_chip_pos(x, dT, de1, de2, key, xy):
     else:
         xmax = 4096
 
-    x_bins = numpy.linspace(0,xmax,129)
+    x_bins = np.linspace(0,xmax,129)
     print('x_bins = ',x_bins)
-    index = numpy.digitize(x, x_bins)
+    index = np.digitize(x, x_bins)
     print('len(index) = ',len(index))
     bin_de1 = [de1[index == i].mean() for i in range(1, len(x_bins))]
     print('bin_de1 = ',bin_de1)
@@ -270,13 +198,13 @@ def bin_by_chip_pos(x, dT, de1, de2, key, xy):
     print('bin_de2 = ',bin_de2)
     bin_dT = [dT[index == i].mean() for i in range(1, len(x_bins))]
     print('bin_dT = ',bin_dT)
-    bin_de1_err = [ numpy.sqrt(de1[index == i].var() / len(de1[index == i])) 
+    bin_de1_err = [ np.sqrt(de1[index == i].var() / len(de1[index == i]))
                     for i in range(1, len(x_bins)) ]
     print('bin_de1_err = ',bin_de1_err)
-    bin_de2_err = [ numpy.sqrt(de2[index == i].var() / len(de2[index == i])) 
+    bin_de2_err = [ np.sqrt(de2[index == i].var() / len(de2[index == i]))
                     for i in range(1, len(x_bins)) ]
     print('bin_de2_err = ',bin_de2_err)
-    bin_dT_err = [ numpy.sqrt(dT[index == i].var() / len(dT[index == i])) 
+    bin_dT_err = [ np.sqrt(dT[index == i].var() / len(dT[index == i]))
                     for i in range(1, len(x_bins)) ]
     print('bin_dT_err = ',bin_dT_err)
 
@@ -304,9 +232,9 @@ def bin_by_chip_pos(x, dT, de1, de2, key, xy):
     plt.errorbar(x_bins[2:-3], bin_dT[2:-2], yerr=bin_dT_err[2:-2], color='blue', fmt='o')
     plt.xlabel('Chip '+xy+' position')
     plt.ylabel('$size_{psf} - size_{model}$')
-    plt.savefig('dsize_'+xy+'_' + key + '.png')
-    plt.savefig('dsize_'+xy+'_' + key + '.pdf')
-    plt.savefig('dsize_'+xy+'_' + key + '.eps')
+    plt.savefig('dsize_'+xy+'_' + bands + '.png')
+    plt.savefig('dsize_'+xy+'_' + bands + '.pdf')
+    plt.savefig('dsize_'+xy+'_' + bands + '.eps')
 
     plt.clf()
     plt.title('PSF Ellipticity residuals')
@@ -318,11 +246,11 @@ def bin_by_chip_pos(x, dT, de1, de2, key, xy):
     plt.legend([e1_line, e2_line], [r'$e_1$', r'$e_2$'])
     plt.xlabel('Chip '+xy+' position')
     plt.ylabel('$e_{psf} - e_{model}$')
-    plt.savefig('de_'+xy+'_' + key + '.png')
-    plt.savefig('de_'+xy+'_' + key + '.pdf')
-    plt.savefig('de_'+xy+'_' + key + '.eps')
+    plt.savefig('de_'+xy+'_' + bands + '.png')
+    plt.savefig('de_'+xy+'_' + bands + '.pdf')
+    plt.savefig('de_'+xy+'_' + bands + '.eps')
 
-    # Make broken x-axis. 
+    # Make broken x-axis.
     plt.clf()
     f, (ax,ax2) = plt.subplots(1,2,sharey=True)
     ax.set_xlim(0,200)
@@ -342,9 +270,9 @@ def bin_by_chip_pos(x, dT, de1, de2, key, xy):
     ax.xaxis.set_label_coords(1.08,-0.05)
     ax.set_ylabel('$size_{psf} - size_{model}$')
 
-    plt.savefig('dsize_'+xy+'2_' + key + '.png')
-    plt.savefig('dsize_'+xy+'2_' + key + '.pdf')
-    plt.savefig('dsize_'+xy+'2_' + key + '.eps')
+    plt.savefig('dsize_'+xy+'2_' + bands + '.png')
+    plt.savefig('dsize_'+xy+'2_' + bands + '.pdf')
+    plt.savefig('dsize_'+xy+'2_' + bands + '.eps')
 
     plt.clf()
     f, (ax,ax2) = plt.subplots(1,2,sharey=True)
@@ -368,72 +296,72 @@ def bin_by_chip_pos(x, dT, de1, de2, key, xy):
     ax.xaxis.set_label_coords(1.08,-0.05)
     ax.set_ylabel('$e_{psf} - e_{model}$')
 
-    plt.savefig('de_'+xy+'2_' + key + '.png')
-    plt.savefig('de_'+xy+'2_' + key + '.pdf')
-    plt.savefig('de_'+xy+'2_' + key + '.eps')
+    plt.savefig('de_'+xy+'2_' + bands + '.png')
+    plt.savefig('de_'+xy+'2_' + bands + '.pdf')
+    plt.savefig('de_'+xy+'2_' + bands + '.eps')
 
 
-def bin_by_fov(ccd, x, y, dT, de1, de2, key):
+def bin_by_fov(ccd, x, y, dT, de1, de2, bands):
 
-    import numpy
+    import numpy as np
     import matplotlib.pyplot as plt
     from toFocal import toFocal
 
-    all_x = numpy.array([])
-    all_y = numpy.array([])
-    all_e1 = numpy.array([])
-    all_e2 = numpy.array([])
-    all_T = numpy.array([])
+    all_x = np.array([])
+    all_y = np.array([])
+    all_e1 = np.array([])
+    all_e2 = np.array([])
+    all_T = np.array([])
 
     nwhisk = 5
-    x_bins = numpy.linspace(0,2048,nwhisk+1)
-    y_bins = numpy.linspace(0,4096,2*nwhisk+1)
+    x_bins = np.linspace(0,2048,nwhisk+1)
+    y_bins = np.linspace(0,4096,2*nwhisk+1)
 
-    ccdnums = numpy.unique(ccd)
+    ccdnums = np.unique(ccd)
     for ccdnum in ccdnums:
-        mask = numpy.where(ccd == ccdnum)[0]
+        mask = np.where(ccd == ccdnum)[0]
         print('ccdnum = ',ccdnum,', nstar = ',mask.sum())
         if mask.sum() < 100: continue
 
-        x_index = numpy.digitize(x[mask], x_bins)
-        y_index = numpy.digitize(y[mask], y_bins)
+        x_index = np.digitize(x[mask], x_bins)
+        y_index = np.digitize(y[mask], y_bins)
 
-        bin_de1 = numpy.array([ de1[mask][(x_index == i) & (y_index == j)].mean() 
+        bin_de1 = np.array([ de1[mask][(x_index == i) & (y_index == j)].mean()
                     for i in range(1, len(x_bins)) for j in range(1, len(y_bins)) ])
         print('bin_de1 = ',bin_de1)
-        bin_de2 = numpy.array([ de2[mask][(x_index == i) & (y_index == j)].mean() 
+        bin_de2 = np.array([ de2[mask][(x_index == i) & (y_index == j)].mean()
                     for i in range(1, len(x_bins)) for j in range(1, len(y_bins)) ])
         print('bin_de2 = ',bin_de2)
-        bin_dT = numpy.array([ dT[mask][(x_index == i) & (y_index == j)].mean() 
+        bin_dT = np.array([ dT[mask][(x_index == i) & (y_index == j)].mean()
                     for i in range(1, len(x_bins)) for j in range(1, len(y_bins)) ])
         print('bin_dT = ',bin_dT)
-        bin_x = numpy.array([ x[mask][(x_index == i) & (y_index == j)].mean() 
+        bin_x = np.array([ x[mask][(x_index == i) & (y_index == j)].mean()
                   for i in range(1, len(x_bins)) for j in range(1, len(y_bins)) ])
         print('bin_x = ',bin_x)
-        bin_y = numpy.array([ y[mask][(x_index == i) & (y_index == j)].mean() 
+        bin_y = np.array([ y[mask][(x_index == i) & (y_index == j)].mean()
                   for i in range(1, len(x_bins)) for j in range(1, len(y_bins)) ])
         print('bin_y = ',bin_y)
-        bin_count = numpy.array([ ((x_index == i) & (y_index == j)).sum()
+        bin_count = np.array([ ((x_index == i) & (y_index == j)).sum()
                       for i in range(1, len(x_bins)) for j in range(1, len(y_bins)) ])
         print('bin_count = ',bin_count)
 
         focal_x, focal_y = toFocal(ccdnum, bin_x, bin_y)
 
-        mask2 = numpy.where(bin_count > 0)[0]
+        mask2 = np.where(bin_count > 0)[0]
         print('num with count > 0 = ',mask2.sum())
-        all_x = numpy.append(all_x, focal_x[mask2])
-        all_y = numpy.append(all_y, focal_y[mask2])
-        all_e1 = numpy.append(all_e1, bin_de1[mask2])
-        all_e2 = numpy.append(all_e2, bin_de2[mask2])
-        all_T = numpy.append(all_T, bin_dT[mask2])
+        all_x = np.append(all_x, focal_x[mask2])
+        all_y = np.append(all_y, focal_y[mask2])
+        all_e1 = np.append(all_e1, bin_de1[mask2])
+        all_e2 = np.append(all_e2, bin_de2[mask2])
+        all_T = np.append(all_T, bin_dT[mask2])
 
 
     plt.clf()
     #plt.title('PSF Ellipticity residuals in DES focal plane')
-    theta = numpy.arctan2(all_e2,all_e1)/2.
-    r = numpy.sqrt(all_e1**2 + all_e2**2)
-    u = r*numpy.cos(theta)
-    v = r*numpy.sin(theta)
+    theta = np.arctan2(all_e2,all_e1)/2.
+    r = np.sqrt(all_e1**2 + all_e2**2)
+    u = r*np.cos(theta)
+    v = r*np.sin(theta)
     plt.xlim(-250,250)
     plt.ylim(-250,250)
     print('all_x = ',all_x)
@@ -442,7 +370,7 @@ def bin_by_fov(ccd, x, y, dT, de1, de2, key):
                     headwidth=0., headlength=0., headaxislength=0.,
                     width=0.001, scale=1.e-3, color='blue')
     ref_scale = 0.01
-    if 'raw' in key:
+    if 'raw' in bands:
         ref_label = 'e = ' + str(ref_scale)
     else:
         ref_label = 'de = ' + str(ref_scale)
@@ -450,13 +378,13 @@ def bin_by_fov(ccd, x, y, dT, de1, de2, key):
                   coordinates='axes', color='darkred', labelcolor='darkred',
                   labelpos='E', fontproperties={'size':'x-small'})
     plt.axis('off')
-    plt.savefig('de_fov_' + key + '.png')
-    plt.savefig('de_fov_' + key + '.pdf')
-    plt.savefig('de_fov_' + key + '.eps')
+    plt.savefig('de_fov_' + bands + '.png')
+    plt.savefig('de_fov_' + bands + '.pdf')
+    plt.savefig('de_fov_' + bands + '.eps')
 
-def make_hist(dT, T, de1, de2, key):
+def make_hist(dT, T, de1, de2, bands):
 
-    import numpy
+    import numpy as np
     import matplotlib.pyplot as plt
 
     nbins = 1000
@@ -464,24 +392,20 @@ def make_hist(dT, T, de1, de2, key):
 
     fig, ax = plt.subplots(1,4, sharey=True)
 
-    ax[0].hist(dT/T, bins=nbins, histtype='step', range=range, fill=True)
-    ax[0].set_xlabel('dT/T')
-    ax[1].hist(de1, bins=nbins, histtype='step', range=range, fill=True)
-    ax[1].set_xlabel('de1')
-    ax[2].hist(de2, bins=nbins, histtype='step', range=range, fill=True)
-    ax[2].set_xlabel('de2')
+    ax[0].hist(dT, bins=nbins, histtype='step', range=range, fill=True)
+    ax[0].set_xlabel('dT (arcsec)')
+    ax[1].hist(dT/T, bins=nbins, histtype='step', range=range, fill=True)
+    ax[1].set_xlabel('dT/T')
+    ax[2].hist(de1, bins=nbins, histtype='step', range=range, fill=True)
+    ax[2].set_xlabel('de1')
+    ax[3].hist(de2, bins=nbins, histtype='step', range=range, fill=True)
+    ax[3].set_xlabel('de2')
 
     fig.set_size_inches(15.0,7.0)
     plt.tight_layout()
-    plt.savefig('dpsf_hist_' + key + '.pdf')
+    plt.savefig('dpsf_hist_' + bands + '.pdf')
 
 def main():
-    import os
-    import glob
-    import galsim
-    import json
-    import numpy
-    import matplotlib
     matplotlib.use('Agg') # needs to be done before import pyplot
 
     args = parse_args()
@@ -497,142 +421,141 @@ def main():
         exps = args.exps
     exps = sorted(exps)
 
-    mask_list = { 'griz' : [], 'riz' : [], 'ri' : [] }
-    used_list = { 'griz' : [], 'riz' : [], 'ri' : [] }
-    ccd_list = { 'griz' : [], 'riz' : [], 'ri' : [] }
-
-    airmass_list = { 'griz' : [], 'riz' : [], 'ri' : [] }
-    sky_list = { 'griz' : [], 'riz' : [], 'ri' : [] }
-    sigsky_list = { 'griz' : [], 'riz' : [], 'ri' : [] }
-    fwhm_list = { 'griz' : [], 'riz' : [], 'ri' : [] }
-
-    ra_list = { 'griz' : [], 'riz' : [], 'ri' : [] }
-    dec_list = { 'griz' : [], 'riz' : [], 'ri' : [] }
-    x_list = { 'griz' : [], 'riz' : [], 'ri' : [] }
-    y_list = { 'griz' : [], 'riz' : [], 'ri' : [] }
-    m_list = { 'griz' : [], 'riz' : [], 'ri' : [] }
-
-    e1_list = { 'griz' : [], 'riz' : [], 'ri' : [] }
-    e2_list = { 'griz' : [], 'riz' : [], 'ri' : [] }
-    T_list = { 'griz' : [], 'riz' : [], 'ri' : [] }
-
-    pe1_list = { 'griz' : [], 'riz' : [], 'ri' : [] }
-    pe2_list = { 'griz' : [], 'riz' : [], 'ri' : [] }
-    pT_list = { 'griz' : [], 'riz' : [], 'ri' : [] }
-
     if args.use_psfex:
         prefix = 'psfex'
     else:
         prefix = 'piff'
 
-    get_data(exps, work,
-             mask_list, used_list, ccd_list,
-             airmass_list, sky_list, sigsky_list, fwhm_list,
-             ra_list, dec_list, x_list, y_list, m_list,
-             e1_list, e2_list, T_list, pe1_list, pe2_list, pT_list, args.tag,
-             prefix=prefix, reserved=args.use_reserved)
+    keys = ['ra', 'dec', 'x', 'y', 'mag', 'obs_e1', 'obs_e2', 'obs_T', 'obs_flag',
+            prefix+'_e1', prefix+'_e2', prefix+'_T', prefix+'_flag']
 
-    #for key in ra_list.keys():
-    for key in ['g', 'r', 'i', 'z', 'riz']:
-        if key not in mask_list: continue
-        mask = numpy.concatenate(mask_list[key])
-        used = numpy.concatenate(used_list[key])
-        ccd = numpy.concatenate(ccd_list[key])
+    if not args.use_dat:
+        data, bands, tilings = read_data(exps, work, keys, limit_bands=args.bands, prefix=prefix,
+                                         use_reserved=args.use_reserved, frac=args.frac)
 
-        #airmass = numpy.concatenate(airmass_list[key])
-        #sky = numpy.concatenate(sky_list[key])
-        #sigsky = numpy.concatenate(sigsky_list[key])
-        #fwhm = numpy.concatenate(fwhm_list[key])
+    use_bands = band_combinations(args.bands)
+    for bands in use_bands:
+        if not args.use_dat:
+            this_data = data[np.in1d(data['band'], list(bands))]
+            if len(this_data) == 0:
+                print('No files with bands ',bands)
+                continue
+            print('bands = ',bands)
+            print('unique flags = ',np.unique(this_data[prefix+'_flag']))
 
-        #med_airmass = numpy.median(airmass)
-        #med_sky = numpy.median(sky)
-        #med_sigsky = numpy.median(sigsky)
-        #med_fwhm = numpy.median(fwhm)
-        #print('airmass: ',min(airmass),med_airmass,max(airmass))
-        #print('sky: ',min(sky),med_sky,max(sky))
-        #print('sigsky: ',min(sigsky),med_sigsky,max(sigsky))
-        #print('fwhm: ',min(fwhm),med_fwhm,max(fwhm))
+            if args.use_reserved:
+                RESERVED = 65
+                used = this_data[prefix+'_flag'] & ~RESERVED == 0
+            else:
+                used = this_data[prefix+'_flag'] == 0
 
-        ra = numpy.concatenate(ra_list[key])
-        dec = numpy.concatenate(dec_list[key])
-        x = numpy.concatenate(x_list[key])
-        y = numpy.concatenate(y_list[key])
-        m = numpy.concatenate(m_list[key])
-        print('full mag range = ',numpy.min(m),numpy.max(m))
-        print('masked mag range = ',numpy.min(m[mask]),numpy.max(m[mask]))
-        print('used mag range = ',numpy.min(m[used]),numpy.max(m[used]))
-        print('len(m) = ',len(m))
-        print('len(mask) = ',len(mask))
-        print('len(used) = ',len(used))
-        print('sum(mask) = ',numpy.sum(mask))
-        print('sum(used) = ',numpy.sum(used))
+            print('used = ',used)
+            print('unique used = ',np.unique(used))
 
-        e1 = numpy.concatenate(e1_list[key])
-        print('mean e1 = ',numpy.mean(e1[mask]))
-        e2 = numpy.concatenate(e2_list[key])
-        print('mean e2 = ',numpy.mean(e2[mask]))
-        T = numpy.concatenate(T_list[key])
-        print('mean s = ',numpy.mean(T[mask]))
-        pe1 = numpy.concatenate(pe1_list[key])
-        print('mean pe1 = ',numpy.mean(pe1[mask]))
-        pe2 = numpy.concatenate(pe2_list[key])
-        print('mean pe2 = ',numpy.mean(pe2[mask]))
-        pT = numpy.concatenate(pT_list[key])
-        print('mean pT = ',numpy.mean(pT[mask]))
+            ra = this_data['ra']
+            dec = this_data['dec']
+            x = this_data['x']
+            y = this_data['y']
+            m = this_data['mag']
+            print('full mag range = ',np.min(m),np.max(m))
+            print('used mag range = ',np.min(m[used]),np.max(m[used]))
 
-        print('min mag = ',numpy.min(m))
-        print('max mag = ',numpy.max(m))
-        print('mean T (used) = ',numpy.mean(T[used]))
-        print('mean e1 (used) = ',numpy.mean(e1[used]))
-        print('mean e2 (used) = ',numpy.mean(e2[used]))
-        print('mean pT (used) = ',numpy.mean(pT[used]))
-        print('mean pe1 (used) = ',numpy.mean(pe1[used]))
-        print('mean pe2 (used) = ',numpy.mean(pe2[used]))
-        de1 = e1 - pe1
-        de2 = e2 - pe2
-        dT = T - pT
-        print('mean dT (used) = ',numpy.mean(dT[used]))
-        print('mean de1 (used) = ',numpy.mean(de1[used]))
-        print('mean de2 (used) = ',numpy.mean(de2[used]))
+            e1 = this_data['obs_e1']
+            print('mean e1 = ',np.mean(e1))
+            e2 = this_data['obs_e2']
+            print('mean e2 = ',np.mean(e2))
+            T = this_data['obs_T']
+            print('mean s = ',np.mean(T))
+            pe1 = this_data[prefix+'_e1']
+            print('mean pe1 = ',np.mean(pe1))
+            pe2 = this_data[prefix+'_e2']
+            print('mean pe2 = ',np.mean(pe2))
+            pT = this_data[prefix+'_T']
+            print('mean pT = ',np.mean(pT))
 
-        min_mused = numpy.min(m[used])
-        bin_by_mag(m[mask], dT[mask], de1[mask], de2[mask], min_mused, key)
-        bin_by_mag(m[used], dT[used], de1[used], de2[used], min_mused, key+'_used')
+            print('min mag = ',np.min(m))
+            print('max mag = ',np.max(m))
+            print('mean T (used) = ',np.mean(T[used]))
+            print('mean e1 (used) = ',np.mean(e1[used]))
+            print('mean e2 (used) = ',np.mean(e2[used]))
+            print('mean pT (used) = ',np.mean(pT[used]))
+            print('mean pe1 (used) = ',np.mean(pe1[used]))
+            print('mean pe2 (used) = ',np.mean(pe2[used]))
+            de1 = e1 - pe1
+            de2 = e2 - pe2
+            dT = T - pT
+            print('mean dT (used) = ',np.mean(dT[used]))
+            print('mean de1 (used) = ',np.mean(de1[used]))
+            print('mean de2 (used) = ',np.mean(de2[used]))
 
-        make_hist(dT[mask], T[mask], de1[mask], de2[mask], key)
-        make_hist(dT[used], T[used], de1[used], de2[used], key+'_used')
+        if args.use_psfex:
+            min_mused = 0
+        elif args.use_dat:
+            # Save these by hand.  TODO: put this in output file?
+            d = { 'r' : 15.0976,
+                  'i' : 15.2468,
+                  'z' : 14.8781,
+                  'riz' : 14.8781 }
+            if not bands in d: continue
+            min_mused = d[bands]
+        else:
+            min_mused = np.min(m[used])
+        print('min_mused = ',min_mused)
 
-        #bin_by_mag(m[mask], T[mask], e1[mask], e2[mask], min_mused, key+'_orig')
-        #bin_by_mag(m[mask], pT[mask], pe1[mask], pe2[mask], min_mused, key+'_model')
+        if args.use_dat:
+            infile1 = 'dpsf_mag_' + bands + '.dat'
+            bin_data1 = read_bins(infile1)
 
-        #mask2 = mask & (sky<med_sky)
-        #bin_by_mag(m[mask2], dT[mask2], de1[mask2], de2[mask2], min_mused, key+'_lowsky')
-        #mask2 = mask & (sky>med_sky)
-        #bin_by_mag(m[mask2], dT[mask2], de1[mask2], de2[mask2], min_mused, key+'_highsky')
+            infile2 = 'dpsf_mag_' + bands + '_used.dat'
+            bin_data2 = read_bins(infile2)
+        else:
+            bin_data1 = bin_by_mag(m, dT, de1, de2, min_mused)
+            outfile1 = 'dpsf_mag_' + bands + '.dat'
+            write_bins(bin_data1, outfile1)
 
-        #mask2 = mask & (sigsky<med_sigsky)
-        #bin_by_mag(m[mask2], dT[mask2], de1[mask2], de2[mask2], min_mused, key+'_lowsigsky')
-        #mask2 = mask & (sigsky>med_sigsky)
-        #bin_by_mag(m[mask2], dT[mask2], de1[mask2], de2[mask2], min_mused, key+'_highsigsky')
+            bin_data2 = bin_by_mag(m[used], dT[used], de1[used], de2[used], min_mused)
+            outfile2 = 'dpsf_mag_' + bands + '_used.dat'
+            write_bins(bin_data2, outfile2)
 
-        #mask2 = mask & (airmass<med_airmass)
-        #bin_by_mag(m[mask2], dT[mask2], de1[mask2], de2[mask2], min_mused, key+'_lowairmass')
-        #mask2 = mask & (airmass>med_airmass)
-        #bin_by_mag(m[mask2], dT[mask2], de1[mask2], de2[mask2], min_mused, key+'_highairmass')
+        pdffile1 = 'dpsf_mag_' + bands + '.pdf'
+        plot_bins(bin_data1, pdffile1)
 
-        #mask2 = mask & (fwhm<med_fwhm)
-        #bin_by_mag(m[mask2], dT[mask2], de1[mask2], de2[mask2], min_mused, key+'_lowfwhm')
-        #mask2 = mask & (fwhm>med_fwhm)
-        #bin_by_mag(m[mask2], dT[mask2], de1[mask2], de2[mask2], min_mused, key+'_highfwhm')
+        pdffile2 = 'dpsf_mag_' + bands + '_used.pdf'
+        plot_bins(bin_data2, pdffile2, min_mused)
 
-        #bin_by_mag(m[mask], T[mask] - numpy.mean(T[mask]),
-        #           e1[mask] - numpy.mean(e1[mask]), e2[mask] - numpy.mean(e2[mask]), min_mused, key)
+        #make_hist(dT, T, de1, de2, bands)
+        #make_hist(dT[used], T[used], de1[used], de2[used], bands+'_used')
 
-        #bin_by_chip_pos(x[used], dT[used], de1[used], de2[used], key, 'x')
-        #bin_by_chip_pos(y[used], dT[used], de1[used], de2[used], key, 'y')
+        #bin_by_mag(m, T, e1, e2, min_mused, bands+'_orig')
+        #bin_by_mag(m, pT, pe1, pe2, min_mused, bands+'_model')
 
-        #bin_by_fov(ccd[used], x[used], y[used], dT[used], de1[used], de2[used], key)
-        #bin_by_fov(ccd[used], x[used], y[used], T[used], e1[used], e2[used], key + 'raw')
+        #mask = sky<med_sky
+        #bin_by_mag(m[mask], dT[mask], de1[mask], de2[mask], min_mused, bands+'_lowsky')
+        #mask = sky>med_sky
+        #bin_by_mag(m[mask], dT[mask], de1[mask], de2[mask], min_mused, bands+'_highsky')
+
+        #mask = sigsky<med_sigsky
+        #bin_by_mag(m[mask], dT[mask], de1[mask], de2[mask], min_mused, bands+'_lowsigsky')
+        #mask = sigsky>med_sigsky
+        #bin_by_mag(m[mask], dT[mask], de1[mask], de2[mask], min_mused, bands+'_highsigsky')
+
+        #mask = mask & (airmass<med_airmass)
+        #bin_by_mag(m[mask], dT[mask], de1[mask], de2[mask], min_mused, bands+'_lowairmass')
+        #mask = mask & (airmass>med_airmass)
+        #bin_by_mag(m[mask], dT[mask], de1[mask], de2[mask], min_mused, bands+'_highairmass')
+
+        #mask = mask & (fwhm<med_fwhm)
+        #bin_by_mag(m[mask], dT[mask], de1[mask], de2[mask], min_mused, bands+'_lowfwhm')
+        #mask = mask & (fwhm>med_fwhm)
+        #bin_by_mag(m[mask], dT[mask], de1[mask], de2[mask], min_mused, bands+'_highfwhm')
+
+        #bin_by_mag(m, T-np.mean(T), e1-np.mean(e1), e2-np.mean(e2), min_mused, bands)
+
+        #bin_by_chip_pos(x[used], dT[used], de1[used], de2[used], bands, 'x')
+        #bin_by_chip_pos(y[used], dT[used], de1[used], de2[used], bands, 'y')
+
+        #bin_by_fov(ccd[used], x[used], y[used], dT[used], de1[used], de2[used], bands)
+        #bin_by_fov(ccd[used], x[used], y[used], T[used], e1[used], e2[used], bands + 'raw')
 
 
 if __name__ == "__main__":

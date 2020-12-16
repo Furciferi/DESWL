@@ -1,12 +1,12 @@
 #! /usr/bin/env python
 from __future__ import print_function
-import numpy
+import numpy as np
 import os
-from toFocal import toFocal
+from read_psf_cats import read_data
 
 def parse_args():
     import argparse
-    
+
     parser = argparse.ArgumentParser(description='Make whisker plots')
 
     # Drectory arguments
@@ -28,165 +28,15 @@ def parse_args():
                         help='Limit to the given bands')
     parser.add_argument('--use_psfex', default=False, action='store_const', const=True,
                         help='Use PSFEx rather than Piff model')
+    parser.add_argument('--frac', default=1., type=float,
+                        help='Choose a random fraction of the input stars')
 
     args = parser.parse_args()
     return args
 
 
-def read_data(args, work, limit_bands=None, prefix='piff'):
-    import fitsio
-
-    RESERVED = 64
-    BAD_CCDS = [2, 31, 61]
-
-    if args.file != '':
-        print('Read file ',args.file)
-        with open(args.file) as fin:
-            exps = [ line.strip() for line in fin if line[0] != '#' ]
-        print('File included %d exposures'%len(exps))
-    else:
-        exps = args.exps
-        print('Explicit listing of %d exposures'%len(exps))
-    exps = sorted(exps)
-
-    keys = ['ra', 'dec', 'x', 'y', 'mag', 'obs_e1', 'obs_e2', 'obs_T',
-            prefix+'_e1', prefix+'_e2', prefix+'_T']
-    all_data = { key : [] for key in keys }
-    all_keys = keys
-
-    all_data['exp'] = []
-    all_data['ccd'] = []
-    all_keys = all_keys + ['exp', 'ccd' ]
-
-    if 'x' in keys:
-        all_data['fov_x'] = []
-        all_data['fov_y'] = []
-        all_keys = all_keys + ['fov_x', 'fov_y']
-
-    inkeys = keys
-
-    all_bands = []  # This keeps track of the band for each record
-    #all_tilings = []  # This keeps track of the tiling for each record
-    bands = set()   # This is the set of all bands being used
-    #tilings = set()   # This is the set of all tilings being used
-
-    for exp in exps:
-
-        print('Start work on exp = ',exp)
-        expnum = int(exp)
-        print('expnum = ',expnum)
-        expinfo = fitsio.read(os.path.join(work, exp, 'exp_info_%d.fits'%expnum))
-
-        if expnum not in expinfo['expnum']:
-            print('expnum is not in expinfo!')
-            print('expinfo[expnum] = ',expinfo['expnum'])
-            print('Could not find information about this expnum.  Skipping ',run,exp)
-            continue
-        i = numpy.nonzero(expinfo['expnum'] == expnum)[0][0]
-        #print('i = ',i)
-        band = expinfo['band'][i]
-        #print('band[k] = ',band)
-        if (limit_bands is not None) and (band not in limit_bands):
-            print('Not doing band = %s.'%band)
-            continue
-
-        #tiling = int(expinfo['tiling'][k])
-        #print('tiling[k] = ',tiling)
-
-        #if tiling == 0:
-            # This shouldn't happen, but it did for a few exposures.  Just skip them, since this
-            # might indicate some kind of problem.
-            #print('tiling == 0.  Skip this exposure.')
-            #continue
-
-        #if tiling > args.max_tiling:
-            #print('tiling is > %d.  Skip this exposure.'%args.max_tiling)
-            #continue
-
-        for k in range(len(expinfo)):
-            ccdnum = expinfo[k]['ccdnum']
-            if expinfo[k]['flag'] != 0:
-                print('Skipping ccd %d because it is blacklisted: '%ccdnum, expinfo[k]['flag'])
-                continue
-            if ccdnum in BAD_CCDS:
-                print('Skipping ccd %d because it is BAD'%ccdnum)
-
-            cat_file = os.path.join(work, exp, "psf_cat_%d_%d.fits"%(expnum,ccdnum))
-            #print('cat_file = ',cat_file)
-            try:
-                data = fitsio.read(cat_file)
-                flag = data[prefix+'_flag']
-            except (OSError, IOError):
-                print('Unable to open cat_file %s.  Skipping this file.'%cat_file)
-                continue
-
-            ntot = len(data)
-            nused = numpy.sum((flag & 1) != 0)
-            nreserved = numpy.sum((flag & RESERVED) != 0)
-            ngood = numpy.sum(flag == 0)
-            #print('nused = ',nused)
-            #print('nreserved = ',nreserved)
-            #print('ngood = ',ngood)
-
-            if args.use_reserved:
-                mask = (flag == RESERVED) | (flag == RESERVED+1)
-            else:
-                mask = (flag == 0)
-            #print('mask = ',mask)
-
-            ngood = numpy.sum(mask)
-            #print('ngood = ',ngood,'/',len(data))
-            assert ngood == len(data[mask])
-            if ngood == 0:
-                print('All objects in ccd %d are flagged.'%ccdnum)
-                print('Probably due to astrometry flags. Skip this exposure.')
-                continue
-
-            for key, inkey in zip(keys, inkeys):
-                all_data[key].append(data[inkey][mask])
-
-            all_data['exp'].append([expnum] * ngood)
-            all_data['ccd'].append([ccdnum] * ngood)
-
-            if 'x' in keys:
-                # Convert to focal position.
-                x,y = toFocal(ccdnum, data['x'][mask], data['y'][mask])
-                # This comes back in units of mm.  Convert to arcsec.
-                # 1 pixel = 15e-3 mm = 0.263 arcsec
-                x *= 0.263/15e-3
-                y *= 0.263/15e-3
-                all_data['fov_x'].append(x)
-                all_data['fov_y'].append(y)
-
-            all_bands.extend( ([band] * ngood) )
-            #all_tilings.extend( ([tiling] * ngood) )
-            bands.add(band)
-            #tilings.add(tiling)
-
-    print('\nFinished processing all exposures')
-    print('bands = ',bands)
-    #print('tilings = ',tilings)
-
-    # Turn the data into a recarray
-    print('all_data.keys = ',all_data.keys())
-    formats = ['f8'] * len(all_keys) + ['a1', 'i2']
-    #names = all_keys + ['band', 'tiling']
-    names = all_keys + ['band']
-    data = numpy.recarray(shape = (len(all_bands),),
-                          formats = formats, names = names)
-    print('data.dtype = ',data.dtype)
-    for key in all_keys:
-        data[key] = numpy.concatenate(all_data[key])
-    data['band'] = all_bands
-    #data['tiling'] = all_tilings
-    print('made recarray')
-
-    tilings = None
-    return data, bands, tilings
-
-
 def get_ccdnums_from_file(file_names):
-    return numpy.array([ 0 ] + [ int(f[-10:-8]) for f in file_names[1:] ])
+    return np.array([ 0 ] + [ int(f[-10:-8]) for f in file_names[1:] ])
 
 def get_ngmix_epoch_data(use_gold=True):
 
@@ -278,7 +128,7 @@ def get_ngmix_epoch_data(use_gold=True):
             print('ccdnums = ',ccdnums)
 
             if use_gold:
-                use1 = numpy.in1d(fits['id'], fcat['coadd_objects_id'][all_ng])
+                use1 = np.in1d(fits['id'], fcat['coadd_objects_id'][all_ng])
             else:
                 use1 = ( (fits['flags'] == 0) & (fits['exp_flags'] == 0) )
                 #use1 = ( (fits['flags'] == 0) & (round['round_flags'] == 0) &
@@ -312,7 +162,7 @@ def get_ngmix_epoch_data(use_gold=True):
             print('x,y = ',x,y)
             index = epoch['number']-1
             print('index = ',index)
-            ccdnum = numpy.empty(len(epoch))
+            ccdnum = np.empty(len(epoch))
             for b in range(len(ccdnums)):
                 mask = band_num == b
                 ccdnum[mask] = ccdnums[b][epoch['file_id'][mask]]
@@ -331,31 +181,31 @@ def get_ngmix_epoch_data(use_gold=True):
 
             # Write this to a json file for quicker load next time.
             with open(json_file,'w') as f:
-                json.dump( (band.tolist(), ccdnum.tolist(), x.tolist(), y.tolist(), 
+                json.dump( (band.tolist(), ccdnum.tolist(), x.tolist(), y.tolist(),
                             e1.tolist(), e2.tolist(), s.tolist(), w.tolist()), f)
 
-        #band_list.append(numpy.array(band)
-        ccd_list.append(numpy.array(ccdnum,dtype=numpy.int16))
-        x_list.append(numpy.array(x,dtype=numpy.float32))
-        y_list.append(numpy.array(y,dtype=numpy.float32))
+        #band_list.append(np.array(band)
+        ccd_list.append(np.array(ccdnum,dtype=np.int16))
+        x_list.append(np.array(x,dtype=np.float32))
+        y_list.append(np.array(y,dtype=np.float32))
 
-        e1_list.append(numpy.array(e1,dtype=numpy.float32))
-        e2_list.append(numpy.array(e2,dtype=numpy.float32))
-        s_list.append(numpy.array(s,dtype=numpy.float32))
-        w_list.append(numpy.array(w,dtype=numpy.float32))
+        e1_list.append(np.array(e1,dtype=np.float32))
+        e2_list.append(np.array(e2,dtype=np.float32))
+        s_list.append(np.array(s,dtype=np.float32))
+        w_list.append(np.array(w,dtype=np.float32))
 
 
     print('\nFinished processing all exposures')
 
-    #band = numpy.concatenate(band_list)
-    ccd = numpy.concatenate(ccd_list)
-    x = numpy.concatenate(x_list)
-    y = numpy.concatenate(y_list)
+    #band = np.concatenate(band_list)
+    ccd = np.concatenate(ccd_list)
+    x = np.concatenate(x_list)
+    y = np.concatenate(y_list)
 
-    e1 = numpy.concatenate(e1_list)
-    e2 = numpy.concatenate(e2_list)
-    s = numpy.concatenate(s_list)
-    w = numpy.concatenate(w_list)
+    e1 = np.concatenate(e1_list)
+    e2 = np.concatenate(e2_list)
+    s = np.concatenate(s_list)
+    w = np.concatenate(w_list)
 
     print('Done concatenating.')
 
@@ -386,14 +236,14 @@ def get_im3shape_epoch_data(use_gold=True):
         mag = fcat['sva1_gold_mag_flags'] == 0
         #ngmix = fcat['ngmix_flags'] == 0
         im3shape = fcat['im3shape_flags'] == 0
-        print('gold: ',numpy.sum(gold))
-        print('spte: ',numpy.sum(spte))
-        print('mag: ',numpy.sum(mag))
-        print('im3shape: ',numpy.sum(im3shape))
+        print('gold: ',np.sum(gold))
+        print('spte: ',np.sum(spte))
+        print('mag: ',np.sum(mag))
+        print('im3shape: ',np.sum(im3shape))
 
         #all_ng = gold & spte & mag & ngmix
         all_im = gold & spte & mag & im3shape
-        print('all_im: ',numpy.sum(all_im))
+        print('all_im: ',np.sum(all_im))
         work = '/astro/u/mjarvis/work/im3shape_v9_epoch'
     else:
         work = '/astro/u/mjarvis/work/im3shape_v9_epoch/no_info'
@@ -414,7 +264,7 @@ def get_im3shape_epoch_data(use_gold=True):
         print(i,'/',len(file_list))
         json_file = os.path.join(work, os.path.basename(file)[:-5] + ".json")
         print('json_file = ',json_file)
-        
+
         epoch_file = os.path.join(epoch_dir, os.path.basename(file))
         print('epoch_file = ',epoch_file)
 
@@ -444,14 +294,14 @@ def get_im3shape_epoch_data(use_gold=True):
 
             print('data ids = ',data['coadd_objects_id'])
             print('epoch ids = ',epoch['coadd_objects_id'])
-            print('num in epoch = ',numpy.sum(numpy.in1d(data['coadd_objects_id'], epoch['coadd_objects_id'])))
+            print('num in epoch = ',np.sum(np.in1d(data['coadd_objects_id'], epoch['coadd_objects_id'])))
             print('len(data) = ',len(data))
             print('len(epoch) = ',len(epoch))
 
             # This is only needed because we are using the v8 epoch catalog with v9 data.
-            use_epoch = numpy.in1d(epoch['coadd_objects_id'], data['coadd_objects_id'])
+            use_epoch = np.in1d(epoch['coadd_objects_id'], data['coadd_objects_id'])
             epoch = epoch[use_epoch]
-            use_data = numpy.in1d(data['coadd_objects_id'], epoch['coadd_objects_id'])
+            use_data = np.in1d(data['coadd_objects_id'], epoch['coadd_objects_id'])
             data = data[use_data]
             print('after matching data to epoch:')
             print('len(data) => ',len(data))
@@ -459,30 +309,30 @@ def get_im3shape_epoch_data(use_gold=True):
 
             if use_gold:
                 print('fcat ids = ',fcat['coadd_objects_id'])
-                print('num in fcat = ',numpy.sum(numpy.in1d(data['coadd_objects_id'], fcat['coadd_objects_id'][all_im])))
-                use1 = numpy.in1d(data['coadd_objects_id'], fcat['coadd_objects_id'][all_im])
+                print('num in fcat = ',np.sum(np.in1d(data['coadd_objects_id'], fcat['coadd_objects_id'][all_im])))
+                use1 = np.in1d(data['coadd_objects_id'], fcat['coadd_objects_id'][all_im])
             else:
-                use1 = ( (data['error_flag'] == 0) & 
+                use1 = ( (data['error_flag'] == 0) &
                          (data['info_flag'] == 0) &
-                         (data['snr'] > 15) & 
+                         (data['snr'] > 15) &
                          (data['mean_rgpp_rp'] > 1.2)
                        )
 
-            print('nuse = ',numpy.sum(use1))
+            print('nuse = ',np.sum(use1))
 
             e1 = data['e1']
             e1 = -e1 # WCS
             e2 = data['e2']
             s = data['radius']
             #w = data['w']
-            w = numpy.ones(len(e1))  # No weights in v9.
+            w = np.ones(len(e1))  # No weights in v9.
 
             x = epoch['orig_col']  # These are currently v8 positions.  v9 was missing these cols.
             y = epoch['orig_row']
             print('x,y = ',x,y)
             ccdnum = epoch['ccd']
             print('ccdnum = ',ccdnum)
-            index = numpy.searchsorted(data['coadd_objects_id'], epoch['coadd_objects_id'])
+            index = np.searchsorted(data['coadd_objects_id'], epoch['coadd_objects_id'])
             print('index = ',index)
             print('len index = ',len(index))
             use2 = use1[index] & (ccdnum > 0)
@@ -503,29 +353,29 @@ def get_im3shape_epoch_data(use_gold=True):
 
             # Write this to a json file for quicker load next time.
             with open(json_file,'w') as f:
-                json.dump( (ccdnum.tolist(), x.tolist(), y.tolist(), 
+                json.dump( (ccdnum.tolist(), x.tolist(), y.tolist(),
                             e1.tolist(), e2.tolist(), s.tolist(), w.tolist()), f)
 
-        ccd_list.append(numpy.array(ccdnum,dtype=numpy.int16))
-        x_list.append(numpy.array(x,dtype=numpy.float32))
-        y_list.append(numpy.array(y,dtype=numpy.float32))
+        ccd_list.append(np.array(ccdnum,dtype=np.int16))
+        x_list.append(np.array(x,dtype=np.float32))
+        y_list.append(np.array(y,dtype=np.float32))
 
-        e1_list.append(numpy.array(e1,dtype=numpy.float32))
-        e2_list.append(numpy.array(e2,dtype=numpy.float32))
-        s_list.append(numpy.array(s,dtype=numpy.float32))
-        w_list.append(numpy.array(w,dtype=numpy.float32))
+        e1_list.append(np.array(e1,dtype=np.float32))
+        e2_list.append(np.array(e2,dtype=np.float32))
+        s_list.append(np.array(s,dtype=np.float32))
+        w_list.append(np.array(w,dtype=np.float32))
 
 
     print('\nFinished processing all exposures')
 
-    ccd = numpy.concatenate(ccd_list)
-    x = numpy.concatenate(x_list)
-    y = numpy.concatenate(y_list)
+    ccd = np.concatenate(ccd_list)
+    x = np.concatenate(x_list)
+    y = np.concatenate(y_list)
 
-    e1 = numpy.concatenate(e1_list)
-    e2 = numpy.concatenate(e2_list)
-    s = numpy.concatenate(s_list)
-    w = numpy.concatenate(w_list)
+    e1 = np.concatenate(e1_list)
+    e2 = np.concatenate(e2_list)
+    s = np.concatenate(s_list)
+    w = np.concatenate(w_list)
 
     print('Done concatenating.')
 
@@ -541,10 +391,10 @@ def psf_resid(m, de1, de2, dT, key=None):
     plt.style.use('/astro/u/mjarvis/.config/matplotlib/stylelib/supermongo.mplstyle')
 
     # Bin by mag
-    mag_bins = numpy.linspace(10,17,71)
+    mag_bins = np.linspace(10,17,71)
     print('mag_bins = ',mag_bins)
 
-    index = numpy.digitize(m, mag_bins)
+    index = np.digitize(m, mag_bins)
     print('len(index) = ',len(index))
     bin_de1 = [de1[index == i].mean() for i in range(1, len(mag_bins))]
     print('bin_de1 = ',bin_de1)
@@ -552,13 +402,13 @@ def psf_resid(m, de1, de2, dT, key=None):
     print('bin_de2 = ',bin_de2)
     bin_dT = [dT[index == i].mean() for i in range(1, len(mag_bins))]
     print('bin_dT = ',bin_dT)
-    bin_de1_err = [ numpy.sqrt(de1[index == i].var() / len(de1[index == i])) 
+    bin_de1_err = [ np.sqrt(de1[index == i].var() / len(de1[index == i]))
                     for i in range(1, len(mag_bins)) ]
     print('bin_de1_err = ',bin_de1_err)
-    bin_de2_err = [ numpy.sqrt(de2[index == i].var() / len(de2[index == i])) 
+    bin_de2_err = [ np.sqrt(de2[index == i].var() / len(de2[index == i]))
                     for i in range(1, len(mag_bins)) ]
     print('bin_de2_err = ',bin_de2_err)
-    bin_dT_err = [ numpy.sqrt(dT[index == i].var() / len(dT[index == i])) 
+    bin_dT_err = [ np.sqrt(dT[index == i].var() / len(dT[index == i]))
                     for i in range(1, len(mag_bins)) ]
     print('bin_dT_err = ',bin_dT_err)
 
@@ -617,44 +467,44 @@ def psf_resid(m, de1, de2, dT, key=None):
 def bin_by_fov(ccd, x, y, e1, e2, s, w=None, nwhisk=5):
     from toFocal import toFocal
 
-    all_x = numpy.array([])
-    all_y = numpy.array([])
-    all_e1 = numpy.array([])
-    all_e2 = numpy.array([])
-    all_s = numpy.array([])
+    all_x = np.array([])
+    all_y = np.array([])
+    all_e1 = np.array([])
+    all_e2 = np.array([])
+    all_s = np.array([])
 
     if w is None:
-        w = numpy.ones(len(x))
+        w = np.ones(len(x))
 
-    x_bins = numpy.linspace(0,2048,nwhisk+1)
-    y_bins = numpy.linspace(0,4096,2*nwhisk+1)
+    x_bins = np.linspace(0,2048,nwhisk+1)
+    y_bins = np.linspace(0,4096,2*nwhisk+1)
     print('x_bins = ',x_bins)
     print('y_bins = ',y_bins)
 
-    ccdnums = numpy.unique(ccd)
+    ccdnums = np.unique(ccd)
     print('ccdnums = ',ccdnums)
     for ccdnum in ccdnums:
-        mask = numpy.where(ccd == ccdnum)[0]
+        mask = np.where(ccd == ccdnum)[0]
         print('ccdnum = ',ccdnum,', nstar = ',len(mask))
         if mask.sum() < 100: continue
         if ccdnum in [31, 61]: continue
 
-        x_index = numpy.digitize(x[mask], x_bins)
-        y_index = numpy.digitize(y[mask], y_bins)
+        x_index = np.digitize(x[mask], x_bins)
+        y_index = np.digitize(y[mask], y_bins)
 
         nbins = (len(x_bins)-1) * (len(y_bins)-1)
-        bin_e1 = numpy.empty(nbins)
-        bin_e2 = numpy.empty(nbins)
-        bin_s = numpy.empty(nbins)
-        bin_x = numpy.empty(nbins)
-        bin_y = numpy.empty(nbins)
-        bin_nz = numpy.empty(nbins, dtype=bool)
+        bin_e1 = np.empty(nbins)
+        bin_e2 = np.empty(nbins)
+        bin_s = np.empty(nbins)
+        bin_x = np.empty(nbins)
+        bin_y = np.empty(nbins)
+        bin_nz = np.empty(nbins, dtype=bool)
         sumesq = 0.
 
         for i in range(1, len(x_bins)):
             for j in range(1, len(y_bins)):
                 k = (i-1)*(len(y_bins)-1) + (j-1)
-                mask2 = numpy.where( (x_index == i) & (y_index == j) )[0]
+                mask2 = np.where( (x_index == i) & (y_index == j) )[0]
                 ww = w[mask][mask2]
                 ws = ww.sum()
                 bin_e1[k] = (ww * e1[mask][mask2]).sum() / ws
@@ -666,18 +516,18 @@ def bin_by_fov(ccd, x, y, e1, e2, s, w=None, nwhisk=5):
                 print(i,j,k,len(mask2), bin_e1[k], bin_e2[k])
                 sumesq += bin_e1[k]**2 + bin_e2[k]**2
 
-        print('rms e = ',numpy.sqrt(sumesq / nbins))
+        print('rms e = ',np.sqrt(sumesq / nbins))
         print('ccdnum = ',ccdnum)
         print('bin_x,y = ',bin_x,bin_y)
         focal_x, focal_y = toFocal(int(ccdnum), bin_x, bin_y)
         print('x,y = ',focal_x, focal_y)
 
         print('num with count > 0 = ',bin_nz.sum())
-        all_x = numpy.append(all_x, focal_x[bin_nz])
-        all_y = numpy.append(all_y, focal_y[bin_nz])
-        all_e1 = numpy.append(all_e1, bin_e1[bin_nz])
-        all_e2 = numpy.append(all_e2, bin_e2[bin_nz])
-        all_s = numpy.append(all_s, bin_s[bin_nz])
+        all_x = np.append(all_x, focal_x[bin_nz])
+        all_y = np.append(all_y, focal_y[bin_nz])
+        all_e1 = np.append(all_e1, bin_e1[bin_nz])
+        all_e2 = np.append(all_e2, bin_e2[bin_nz])
+        all_s = np.append(all_s, bin_s[bin_nz])
 
     return all_x, all_y, all_e1, all_e2, all_s
 
@@ -696,10 +546,10 @@ def make_psf_whiskers(x, y, e1, e2, T, de1, de2, dT):
     print('fig = ',fig)
     print('ax = ',ax)
 
-    theta = numpy.arctan2(e2,e1)/2.
-    r = numpy.sqrt(e1**2 + e2**2)
-    u = r*numpy.cos(theta)
-    v = r*numpy.sin(theta)
+    theta = np.arctan2(e2,e1)/2.
+    r = np.sqrt(e1**2 + e2**2)
+    u = r*np.cos(theta)
+    v = r*np.sin(theta)
     ax[0].set_xlim(-250,250)
     ax[0].set_ylim(-250,250)
     qv = ax[0].quiver(x,y,u,v, pivot='middle', scale_units='xy',
@@ -714,10 +564,10 @@ def make_psf_whiskers(x, y, e1, e2, T, de1, de2, dT):
     ax[0].axis('off')
     print('Done ax[0]')
 
-    theta = numpy.arctan2(de2,de1)/2.
-    r = numpy.sqrt(de1**2 + de2**2)
-    u = r*numpy.cos(theta)
-    v = r*numpy.sin(theta)
+    theta = np.arctan2(de2,de1)/2.
+    r = np.sqrt(de1**2 + de2**2)
+    u = r*np.cos(theta)
+    v = r*np.sin(theta)
     ax[1].set_xlim(-250,250)
     ax[1].set_ylim(-250,250)
     qv = ax[1].quiver(x,y,u,v, pivot='middle', scale_units='xy',
@@ -736,7 +586,7 @@ def make_psf_whiskers(x, y, e1, e2, T, de1, de2, dT):
     fig.tight_layout()
     plt.savefig('both_psf_whiskers.eps')
 
-def make_whiskers(x, y, e1, e2, s, filename, scale=1, auto_size=False, title=None, ref=0.01, 
+def make_whiskers(x, y, e1, e2, s, filename, scale=1, auto_size=False, title=None, ref=0.01,
                   ref_name='$e$', alt_ref=None):
 
     import matplotlib
@@ -753,12 +603,12 @@ def make_whiskers(x, y, e1, e2, s, filename, scale=1, auto_size=False, title=Non
     print('y = ',y)
     print('e1 = ',e1)
     print('e2 = ',e2)
-    theta = numpy.arctan2(e2,e1)/2.
-    r = numpy.sqrt(e1**2 + e2**2)
+    theta = np.arctan2(e2,e1)/2.
+    r = np.sqrt(e1**2 + e2**2)
     print('theta = ',theta)
     print('r = ',r)
-    u = r*numpy.cos(theta)
-    v = r*numpy.sin(theta)
+    u = r*np.cos(theta)
+    v = r*np.sin(theta)
     if auto_size:
         ax.set_aspect('equal')
     else:
@@ -799,19 +649,19 @@ def make_whiskers(x, y, e1, e2, s, filename, scale=1, auto_size=False, title=Non
     plt.savefig(filename, bbox_inches='tight')
     print('wrote',filename)
 
-    numpy.savetxt(os.path.splitext(filename)[0] + '.dat',
-                  numpy.array(zip(x, y, u, v, e1, e2, s)), fmt='%r',
+    np.savetxt(os.path.splitext(filename)[0] + '.dat',
+                  np.array(zip(x, y, u, v, e1, e2, s)), fmt='%r',
                   header='x  y  u (=e cos(theta/2))  v (=e sin(theta/2))  e1  e2  size')
 
 def psf_whiskers(ccd, x, y, e1, e2, T, de1, de2, dT):
     psf_binned_data = bin_by_fov(ccd, x, y, e1, e2, T, nwhisk=4)
-    make_whiskers(*psf_binned_data, filename='psf_whiskers.eps', scale=3, title='PSF', 
+    make_whiskers(*psf_binned_data, filename='psf_whiskers.pdf', scale=3, title='PSF',
                   ref=0.01, alt_ref=0.03)
     resid_binned_data = bin_by_fov(ccd, x, y, de1, de2, dT, nwhisk=4)
-    make_whiskers(*resid_binned_data, filename='resid_whiskers.eps', scale=0.3, title='PSF residual',
+    make_whiskers(*resid_binned_data, filename='resid_whiskers.pdf', scale=0.3, title='PSF residual',
                   ref=0.01, alt_ref=0.03, ref_name=r'$\delta e$')
     resid_binned_data = bin_by_fov(ccd, x, y, de1, de2, dT, nwhisk=4)
-    make_whiskers(*resid_binned_data, filename='sm_resid_whiskers.eps', scale=3, title='PSF residual',
+    make_whiskers(*resid_binned_data, filename='sm_resid_whiskers.pdf', scale=3, title='PSF residual',
                   ref=0.01, alt_ref=0.03, ref_name=r'$\delta e$')
     #make_psf_whiskers(x,y,e1,e2,T,de1,de2,dT)
 
@@ -820,30 +670,30 @@ def gal_whiskers(ccd, x, y, e1, e2, s, w, filename, scale=1, title=None):
     make_whiskers(*binned_data, filename=filename, scale=0.5*scale, title=title)
 
 def wmean(e, w, mask):
-    import numpy
-    return numpy.sum(e[mask] * w[mask]) / numpy.sum(w[mask])
+    import np
+    return np.sum(e[mask] * w[mask]) / np.sum(w[mask])
 
 def evscol(ccd, x, y, e1, e2, s, w, filename, title=None):
     import matplotlib.pyplot as plt
-    import numpy
+    import np
 
     # Bin data by column
     ncols_per_bin = 8
     skip = 20
-    bins = numpy.linspace(skip, 2048-skip, (2048-2*skip)/ncols_per_bin + 1)
+    bins = np.linspace(skip, 2048-skip, (2048-2*skip)/ncols_per_bin + 1)
     print('bins = ',bins)
 
     # Find mean e1, e2 in each bin
-    denom = numpy.histogram(x, bins, weights=w)[0]
-    #index = numpy.digitize(x, bins)
-    e1_bins = numpy.histogram(x, bins, weights=e1*w)[0] / denom
-    #e1_bins = [numpy.mean(e1[index == i]) for i in range(1, len(bins))]
+    denom = np.histogram(x, bins, weights=w)[0]
+    #index = np.digitize(x, bins)
+    e1_bins = np.histogram(x, bins, weights=e1*w)[0] / denom
+    #e1_bins = [np.mean(e1[index == i]) for i in range(1, len(bins))]
     print('e1_bins = ',e1_bins)
-    e2_bins = numpy.histogram(x, bins, weights=e2*w)[0] / denom
-    #e2_bins = [numpy.mean(e2[index == i]) for i in range(1, len(bins))]
+    e2_bins = np.histogram(x, bins, weights=e2*w)[0] / denom
+    #e2_bins = [np.mean(e2[index == i]) for i in range(1, len(bins))]
     print('e2_bins = ',e2_bins)
-    x_bins = numpy.histogram(x, bins, weights=x*w)[0] / denom
-    #x_bins = [numpy.mean(x[index == i]) for i in range(1, len(bins))]
+    x_bins = np.histogram(x, bins, weights=x*w)[0] / denom
+    #x_bins = [np.mean(x[index == i]) for i in range(1, len(bins))]
     print('x_bins = ',x_bins)
 
     # Make 3 axes, where the first one spans the whole row.
@@ -855,9 +705,9 @@ def evscol(ccd, x, y, e1, e2, s, w, filename, title=None):
     ax3 = plt.subplot2grid( (2,2), (1,1) )
 
     # Draw a line through the mean e1, e2 to help guide the eye
-    sw = numpy.sum(w)
-    mean_e1 = numpy.sum(e1*w)/sw
-    mean_e2 = numpy.sum(e2*w)/sw
+    sw = np.sum(w)
+    mean_e1 = np.sum(e1*w)/sw
+    mean_e2 = np.sum(e2*w)/sw
     ax1.plot( [0,2048], [mean_e1, mean_e1], color='red', ls='--', lw=0.5)
     ax2.plot( [0,2048], [mean_e1, mean_e1], color='red', ls='--', lw=0.5)
     ax3.plot( [0,2048], [mean_e1, mean_e1], color='red', ls='--', lw=0.5)
@@ -898,12 +748,12 @@ def evscol(ccd, x, y, e1, e2, s, w, filename, title=None):
     ax3.yaxis.set_ticklabels([])           # Don't label the y ticks.
 
     # It wants to label ever 0.001, but I think it looks nicer every 0.002.
-    ax1.yaxis.set_ticks( numpy.arange(-0.004, 0.004, 0.002) )
-    ax2.yaxis.set_ticks( numpy.arange(-0.004, 0.004, 0.002) )
-    ax3.yaxis.set_ticks( numpy.arange(-0.004, 0.004, 0.002) )
+    ax1.yaxis.set_ticks( np.arange(-0.004, 0.004, 0.002) )
+    ax2.yaxis.set_ticks( np.arange(-0.004, 0.004, 0.002) )
+    ax3.yaxis.set_ticks( np.arange(-0.004, 0.004, 0.002) )
 
-    ax2.xaxis.set_ticks( numpy.arange(0, 80, 20) )
-    ax3.xaxis.set_ticks( numpy.arange(1980, 2060, 20) )
+    ax2.xaxis.set_ticks( np.arange(0, 80, 20) )
+    ax3.xaxis.set_ticks( np.arange(1980, 2060, 20) )
 
     # Make little diagonal cuts to make the discontinuity clearer:
     # cf. http://stackoverflow.com/questions/5656798/python-matplotlib-is-there-a-way-to-make-a-discontinuous-axis
@@ -968,7 +818,20 @@ def main():
 
 
     if True:
-        data, bands, tilings = read_data(args, work, limit_bands=args.bands, prefix=prefix)
+        if args.file != '':
+            print('Read file ',args.file)
+            with open(args.file) as fin:
+                exps = [ line.strip() for line in fin if line[0] != '#' ]
+            print('File included %d exposures'%len(exps))
+        else:
+            exps = args.exps
+            print('Explicit listing of %d exposures'%len(exps))
+        exps = sorted(exps)
+
+        keys = ['ra', 'dec', 'x', 'y', 'mag', 'obs_e1', 'obs_e2', 'obs_T',
+                prefix+'_e1', prefix+'_e2', prefix+'_T']
+        data, bands, tilings = read_data(exps, work, keys, limit_bands=args.bands, prefix=prefix,
+                                         use_reserved=args.use_reserved, frac=args.frac)
         e1 = data['obs_e1']
         e2 = data['obs_e2']
         T = data['obs_T']
@@ -980,7 +843,7 @@ def main():
         de2 = e2-p_e2
         dT = (T-p_T)/T
 
-        psf_resid(data['mag'], de1, de2, dT)
+        #psf_resid(data['mag'], de1, de2, dT)
 
         psf_whiskers(data['ccd'], data['x'], data['y'], e1, e2, T, de1, de2, dT)
 
